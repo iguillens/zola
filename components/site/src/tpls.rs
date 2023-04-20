@@ -53,6 +53,14 @@ pub fn register_early_global_fns(site: &mut Site) -> TeraResult<()> {
         ),
     );
     site.tera.register_function(
+        "get_file_metadata",
+        global_fns::GetFileMetadata::new(
+            site.base_path.clone(),
+            site.config.theme.clone(),
+            site.output_path.clone(),
+        ),
+    );
+    site.tera.register_function(
         "get_hash",
         global_fns::GetHash::new(
             site.base_path.clone(),

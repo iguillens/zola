@@ -8,7 +8,8 @@ use config::Config;
 
 use libs::base64::engine::{general_purpose::STANDARD as standard_b64, Engine};
 use libs::sha2::{digest, Sha256, Sha384, Sha512};
-use libs::tera::{from_value, to_value, Function as TeraFn, Result, Value};
+use libs::tera::{from_value, to_value, Function as TeraFn, Map, Result, Value};
+use libs::time::{format_description::well_known::Iso8601, OffsetDateTime};
 use utils::site::resolve_internal_link;
 
 fn compute_hash<D: digest::Digest>(data: &[u8], as_base64: bool) -> String
@@ -240,6 +241,78 @@ impl TeraFn for GetHash {
         };
 
         Ok(to_value(hash).unwrap())
+    }
+}
+
+#[derive(Debug)]
+pub struct GetFileMetadata {
+    base_path: PathBuf,
+    theme: Option<String>,
+    output_path: PathBuf,
+}
+
+impl GetFileMetadata {
+    pub fn new(base_path: PathBuf, theme: Option<String>, output_path: PathBuf) -> Self {
+        Self { base_path, theme, output_path }
+    }
+}
+
+impl TeraFn for GetFileMetadata {
+    fn call(&self, args: &HashMap<String, Value>) -> Result<Value> {
+        let path = required_arg!(
+            String,
+            args.get("path"),
+            "`get_file_metadata` requires a `path` argument with a string value"
+        );
+
+        let file_path =
+            match search_for_file(&self.base_path, &path, &self.theme, &self.output_path)
+                .map_err(|e| format!("`get_file_metadata`: {}", e))?
+            {
+                Some((f, _)) => f,
+                None => {
+                    return Err(format!("`get_file_metadata`: Cannot find file: {}", path).into());
+                }
+            };
+
+        let file = match std::fs::File::open(file_path) {
+            Ok(f) => f,
+            Err(e) => {
+                return Err(format!("File {} could not be open: {}", path, e).into());
+            }
+        };
+
+        let metadata = match file.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                return Err(format!("Error reading file {}: {}", path, e).into());
+            }
+        };
+
+        let creation_date = match metadata.created() {
+            Ok(ts) => OffsetDateTime::from(ts)
+                .format(&Iso8601::DEFAULT)
+                .map_err(|e| format!("`get_file_metadata`: {}", e)),
+            Err(e) => {
+                return Err(format!("File {} missing creation date: {}", path, e).into());
+            }
+        }?;
+
+        let modification_date = match metadata.modified() {
+            Ok(ts) => OffsetDateTime::from(ts)
+                .format(&Iso8601::DEFAULT)
+                .map_err(|e| format!("`get_file_metadata`: {}", e)),
+            Err(e) => {
+                return Err(format!("File {} missing modification date: {}", path, e).into());
+            }
+        }?;
+
+        let mut metadata_map = Map::new();
+        metadata_map.insert(String::from("file_size"), Value::Number(metadata.len().into()));
+        metadata_map.insert(String::from("creation_date"), Value::String(creation_date));
+        metadata_map.insert(String::from("modification_date"), Value::String(modification_date));
+
+        Ok(Value::Object(metadata_map))
     }
 }
 
